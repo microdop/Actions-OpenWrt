@@ -1,0 +1,159 @@
+name: N1
+
+on:
+  repository_dispatch:
+    types: [kn1,sshkn1]
+#  release:
+#    types: published
+#  push:
+#    branches:
+#      - master
+#    paths:
+#      - 'N1Development.config'
+  schedule:
+    - cron: 00 18 * * *
+  watch:
+    types: started
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  CONFIG_FILE: N1Development.config
+  DIY_SH: Openwrt.sh
+  SSH_ACTIONS: false
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: false
+  UPLOAD_RELEASE: true
+  UPLOAD_COWTRANSFER: true
+  UPLOAD_WETRANSFER: true
+  TZ: Asia/Shanghai
+  FILE_NAME: N1Development
+
+jobs:
+  build:
+    runs-on: ubuntu-18.04
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: WeChat notification
+      run: curl https://sc.ftqq.com/${{ secrets.ServerChan }}.send?text=${{ env.FILE_NAME }}开始编译
+      
+    - name: Checkout
+      uses: actions/checkout@master
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-1804)
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        cd openwrt
+        ./scripts/feeds update -a && git clone https://github.com/tuanqing/install-program package/install-program
+        ./scripts/feeds install -a
+        useVersionInfo=$(git show -s --date=short --format="The last time before compilation [➦Main source code](https://github.com/coolsnowwolf/lede)Update record: <br/> Updated:% an <br/> Updated:% cd <br/> update:% s <br/> hash value:% H ")
+        echo "::set-env name=useVersionInfo::$useVersionInfo"
+        echo "::set-env name=DATE::$(date "+%Y-%m-%d·%H:%M:%S")"
+    - name: Load custom configuration
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_SH
+    - name: SSH connection to Actions
+      uses: P3TERX/debugger-action@master
+      if: env.SSH_ACTIONS == 'true' || contains(github.event.action, 'sshkn1')
+
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(($(nproc) + 1)) thread compile"
+        make -j$(($(nproc) + 1)) || make -j$(($(nproc) + 1)) || make -j1 V=s
+        echo "::set-output name=status::success"
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Build firmware
+      id: build
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        git clone https://github.com/tuanqing/mknop.git
+        cp openwrt/bin/targets/*/*/*.tar.gz ./mknop/openwrt/n1-rootfs.tar.gz
+        cd mknop
+        sudo ./make -d -s 512 -k 5.4.50
+        echo "::set-output name=status::success"
+    - name: Organize files
+      id: organize
+      if: steps.build.outputs.status == 'success' && !cancelled()
+      run: |
+        cp mknop/out/5.4.50/*.img ./openwrt/bin/targets/bcm27xx/bcm2710/openwrt-on-n1.img
+        tar -zcvf bin.tar.gz openwrt/bin
+        cp bin.tar.gz ./openwrt/bin/targets/bcm27xx/bcm2710/bin.tar.gz
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        bzip2 *.img
+        echo "::set-env name=FIRMWARE::$PWD"
+        echo "::set-output name=status::success"
+    - name: Upload bin directory
+      uses: actions/upload-artifact@master
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true' && !cancelled()
+      with:
+        name: openwrt-kn1
+        path: ${{ env.FIRMWARE }}
+
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@master
+      if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: kn1
+        path: ${{ env.FIRMWARE }}
+
+    - name: Create release
+      uses: ncipollo/release-action@v1.7.2
+      if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: ${{ env.DATE }} 🚀 N1Development | Automatic compilation
+        allowUpdates: true
+        tag: n1Development
+        commit: master
+        token: ${{ secrets.RELEASES_TOKEN }}
+        body: |
+          ${{ env.useVersionInfo }}
+        artifacts: ${{ env.FIRMWARE }}/*
+
+    - name: Upload firmware to cowtransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
+    - name: Upload firmware to WeTransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
+        echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
+    - name: WeChat notification
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      run: curl https://sc.ftqq.com/${{ secrets.ServerChan }}.send?text=${{ env.FILE_NAME }}发布成功-编译结束
