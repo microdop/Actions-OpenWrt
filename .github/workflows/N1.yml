@@ -1,4 +1,4 @@
-name: N1
+name: N1Development
 
 on:
   repository_dispatch:
@@ -19,7 +19,7 @@ env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
   CONFIG_FILE: N1Development.config
-  DIY_SH: Openwrt.sh
+  DIY_SH: openwrt.sh
   SSH_ACTIONS: false
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: false
